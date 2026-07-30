@@ -1,15 +1,18 @@
 <script setup lang="ts">
-// Raw agent chat surface (SPEC-003 §5.8).
+// Agent chat surface: session controls + composer (SPEC-003 §5.8, SPEC-004 §5.1).
 //
-// Deliberately unstyled-by-Quasar and markdown-free: this phase proves the ACP
-// plumbing end to end (prompt → chunks → tool calls → permission → turn end).
-// The real chat UI — markdown, code blocks, diff views, streaming cursor — is
-// SPEC-004, and building it here would mean rewriting it there.
+// This component owns the plumbing — which agent, which session, socket state,
+// sending prompts. Rendering the conversation belongs to `chat/ChatTranscript`, and
+// the split matters: everything that touches agent-authored text lives under
+// `components/chat/`, so the XSS surface is one directory rather than spread through
+// the pane that also holds buttons.
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { useAcpStore } from '../stores/acp';
 import { createSessionView } from '../stores/acpSession';
+import ChatTranscript from './chat/ChatTranscript.vue';
+import PermissionDialog from './chat/PermissionDialog.vue';
 
 const props = defineProps<{
   /** Which project this pane's agent runs in. Null until one is selected. */
@@ -77,11 +80,15 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-function toolLabel(toolCallId: string): string {
-  const call = view.value.toolCalls[toolCallId];
-  if (!call) return toolCallId;
-  const status = call.status ? ` · ${call.status}` : '';
-  return `${call.title ?? call.kind ?? toolCallId}${status}`;
+// A tool call names the files it touched, and those names should be clickable.
+// Opening them in the editor needs the pane system (SPEC-008), so for now the
+// click is re-emitted and the parent decides — nothing here pretends to navigate.
+const emit = defineEmits<{
+  (event: 'open-location', payload: { path: string; line: number | null }): void;
+}>();
+
+function onOpenLocation(payload: { path: string; line: number | null }): void {
+  emit('open-location', payload);
 }
 </script>
 
@@ -135,57 +142,21 @@ function toolLabel(toolCallId: string): string {
         {{ projectId ? 'Chưa có session. Bấm + Session để bắt đầu.' : 'Chọn một project trước.' }}
       </p>
 
-      <template v-else>
-        <!-- A pruned log means the transcript is not the whole conversation.
-             Saying so beats letting the user read a gap as a complete exchange. -->
-        <p v-if="view.hasGap" class="acp__gap-note">
-          Một phần lịch sử đã bị xoá bởi server.
-        </p>
-
-        <ol v-if="view.plan?.entries.length" class="acp__plan">
-          <li v-for="(step, i) in view.plan.entries" :key="i" :data-status="step.status">
-            {{ step.content }}
-          </li>
-        </ol>
-
-        <div class="acp__stream">
-          <template v-for="entry in view.entries" :key="`${entry.kind}-${entry.seq}`">
-            <p v-if="entry.kind === 'message'" class="acp__msg">{{ entry.text }}</p>
-            <p v-else-if="entry.kind === 'thought'" class="acp__thought">{{ entry.text }}</p>
-            <p v-else-if="entry.kind === 'tool'" class="acp__tool">
-              {{ toolLabel(entry.toolCallId) }}
-            </p>
-            <p v-else-if="entry.kind === 'turn_end'" class="acp__end">
-              {{ entry.label || '— hết lượt —' }}
-            </p>
-            <p v-else-if="entry.kind === 'gap'" class="acp__end">
-              — thiếu lịch sử trước seq {{ entry.fromSeq }} —
-            </p>
-            <p v-else class="acp__end">{{ entry.text }}</p>
-          </template>
-        </div>
-      </template>
+      <!-- The gap notice and the plan checklist both live in ChatTranscript: they
+           scroll with the conversation they describe. -->
+      <ChatTranscript v-else :view="view" @open-location="onOpenLocation" />
     </div>
 
     <!-- A parked request blocks the agent's turn, so it gets buttons instead of
-         a message that can scroll away (A9/A10). -->
-    <div v-if="view.permission" class="acp__permission">
-      <span>{{ view.permission.toolCall.title ?? 'Agent xin quyền' }}</span>
-      <button
-        v-for="opt in view.permission.options"
-        :key="opt.optionId"
-        class="acp__btn"
-        @click="session && acp.answerPermission(session.id, opt.optionId)"
-      >
-        {{ opt.name }}
-      </button>
-      <button
-        class="acp__btn"
-        @click="session && acp.dismissPermission(session.id)"
-      >
-        Bỏ qua
-      </button>
-    </div>
+         a message that can scroll away (A9/A10). Pinned above the composer rather
+         than a modal, so the diff it is asking about stays readable (04 §5.7). -->
+    <PermissionDialog
+      v-if="session && view.permission"
+      :tool-call="view.permission.toolCall"
+      :options="view.permission.options"
+      @choose="(optionId: string) => session && acp.answerPermission(session.id, optionId)"
+      @dismiss="session && acp.dismissPermission(session.id)"
+    />
 
     <footer class="acp__input">
       <textarea
@@ -257,69 +228,18 @@ function toolLabel(toolCallId: string): string {
 .acp__state--reconnecting {
   color: #ffd24a;
 }
+/* The transcript scrolls itself (it has to, to implement follow-the-bottom), so
+   this is a plain flex track — an `overflow-y` here would produce two scrollbars
+   and break `scrollToBottom`. */
 .acp__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px 12px;
-}
-.acp__empty {
-  color: #9e9e9e;
-}
-.acp__stream {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  flex: 1;
+  min-height: 0;
 }
-/* Agent replies arrive with meaningful newlines and indentation; collapsing
-   whitespace would mangle every code block it emits. */
-.acp__msg,
-.acp__thought {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.acp__thought {
+.acp__empty {
+  padding: 8px 12px;
   color: #9e9e9e;
-  font-style: italic;
-}
-.acp__tool {
-  margin: 0;
-  padding: 2px 6px;
-  border-left: 2px solid #4c7ecf;
-  color: #b8cdf0;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.acp__end {
-  margin: 0;
-  color: #7a7a7a;
-  font-size: 11px;
-}
-.acp__gap-note {
-  margin: 0 0 8px;
-  color: #ffd79b;
-  font-size: 12px;
-}
-.acp__plan {
-  margin: 0 0 8px;
-  padding-left: 20px;
-  color: #c9c9c9;
-  font-size: 12px;
-}
-.acp__plan li[data-status='completed'] {
-  color: #6fcf74;
-  text-decoration: line-through;
-}
-.acp__permission {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-top: 1px solid #4a3c20;
-  background: #2a2417;
-  color: #ffd79b;
-  font-size: 12px;
 }
 .acp__input {
   display: flex;

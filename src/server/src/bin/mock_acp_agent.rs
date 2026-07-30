@@ -133,6 +133,25 @@ fn notify(conn: &ConnectionTo<Client>, session: &SessionId, update: SessionUpdat
     conn.send_notification(SessionNotification::new(session.clone(), update))
 }
 
+/// Chunks for the `rich_markdown` script (SPEC-004 §8.1 #3).
+///
+/// Kept as a const so `scripts/verify-spec-004.mjs` can assert against the same
+/// literals: a test that builds its own expected string tests its own arithmetic.
+const RICH_MARKDOWN_CHUNKS: &[&str] = &[
+    "# Heading\n\nSome **bold** and a table:\n\n",
+    "| lang | ok |\n| --- | --- |\n| rust | yes |\n\n",
+    "```rust\nfn main() { println!(\"hi\"); }\n```\n\n",
+    // Inline and block math. `$PATH` is here on purpose: it must NOT be treated
+    // as math, and it must survive the server untouched either way.
+    "Inline $x^2 + y^2 = z^2$ and echo $PATH in prose.\n\n$$\\int_0^1 x\\,dx = \\frac{1}{2}$$\n\n",
+    "```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n\n",
+    // The four payloads from §6 B3-B6.
+    "<script>alert('xss')</script>\n\n",
+    "<img src=x onerror=alert('xss')>\n\n",
+    "[click me](javascript:alert('xss'))\n\n",
+    "<iframe src=\"data:text/html,<script>alert(1)</script>\"></iframe>\n",
+];
+
 fn text_chunk(text: &str) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(text.to_string())))
 }
@@ -362,6 +381,29 @@ async fn run_script(
                 conn,
                 s,
                 SessionUpdate::AgentMessageChunk(text_chunk("still alive")),
+            )?;
+            Ok(StopReason::EndTurn)
+        }
+
+        "rich_markdown" => {
+            // SPEC-004 §8.1 #3: the boundary test. Everything the chat UI has to
+            // render — fences, tables, math, a diagram — plus four XSS payloads,
+            // sent as separate chunks so the assertion also covers reassembly.
+            //
+            // The point is that the SERVER changes none of it. Escaping here would
+            // look like a fix and would in fact hide the frontend's defences, so the
+            // verify script asserts these strings arrive byte-for-byte.
+            for chunk in RICH_MARKDOWN_CHUNKS {
+                notify(conn, s, SessionUpdate::AgentMessageChunk(text_chunk(chunk)))?;
+            }
+            // A thought carrying a payload too: `ChatThought` renders markdown
+            // through the same pipeline, so it is the same XSS surface.
+            notify(
+                conn,
+                s,
+                SessionUpdate::AgentThoughtChunk(text_chunk(
+                    "Reasoning with a payload: <img src=x onerror=alert('thought')>",
+                )),
             )?;
             Ok(StopReason::EndTurn)
         }
