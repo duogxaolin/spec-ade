@@ -1,0 +1,32 @@
+{
+  "$comment": "STUB ONLY (Pha 9). Not a complete Tauri config. Demonstrates the sidecar/externalBin pattern per docs/analysis/04-module-tech-reference.md §8. Full scaffolding via `tauri init` is deferred. See ./README.md.",
+  "productName": "Spec ADE",
+  "version": "0.1.0",
+  "identifier": "dev.spec-ade.app",
+  "build": {
+    "$comment": "TODO(phase-9): build the SPA in ../web then embed/serve it. beforeBuildCommand + frontendDist wire this once the sidecar launcher is written.",
+    "beforeBuildCommand": "",
+    "frontendDist": "../web/dist"
+  },
+  "app": {
+    "$comment": "TODO(phase-9): WebView points at the sidecar's dynamic 127.0.0.1:<port>, set at runtime after the server reports its bound port.",
+    "windows": [
+      {
+        "title": "Spec ADE",
+        "width": 1280,
+        "height": 800
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "$comment-externalBin": "TODO(phase-9): the compiled backend ships as a sidecar. Tauri appends the target-triple suffix automatically (e.g. spec-ade-server-x86_64-apple-darwin). macOS: must be code-signed + notarized or Gatekeeper blocks it.",
+    "externalBin": [
+      "binaries/spec-ade-server"
+    ]
+  },
+  "plugins": {
+    "$comment": "TODO(phase-9): tauri-plugin-shell needed for Command::new_sidecar(); add a capability granting shell:allow-execute scoped to the sidecar."
+  }
+}

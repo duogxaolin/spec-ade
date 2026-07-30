@@ -1,0 +1,79 @@
+[package]
+name = "spec-ade-server"
+version = "0.1.0"
+# Edition 2024 per docs/analysis/02-architecture.md ("Rust 2024" backend).
+# Requires Rust >= 1.85; confirmed building on the pinned toolchain
+# (cargo/rustc 1.95). Resolved (was: TODO verify edition).
+edition = "2024"
+description = "Spec ADE backend — single Axum binary serving SPA + PTY/WS + ACP orchestration"
+license = "MIT"
+
+# Versions pinned per docs/analysis/04-module-tech-reference.md (pulled 2026-07-25).
+# Only the dependencies needed by the early roadmap phases (Pha 0-3) are active;
+# later-phase crates are listed but commented until their phase begins.
+[dependencies]
+# --- Pha 0: skeleton (Axum server + embedded SPA + auth) ---
+# Versions below resolved + confirmed building on 2026-07-25 (cargo 1.95):
+# axum 0.8.9, tower-http 0.6.11, rust-embed 8.12.0.
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Embedded SPA (04 §2 / 02): serve built frontend from the single binary.
+# Chose rust-embed over memory-serve (both cited in 04 §2) — its `folder`
+# attribute + RustEmbed derive maps cleanly to serving src/web/dist.
+rust-embed = "8"
+# Auth (06 §Auth): Argon2 reserved for the interactive access-key flow (Pha 0+).
+argon2 = "0.5"
+# CLI arg parsing for -H/--host, -p/--port, --no-open (07 Pha 0).
+# `env` feature lets flags fall back to SPEC_ADE_HOST / SPEC_ADE_PORT.
+clap = { version = "4", features = ["derive", "env"] }
+# Constant-time token comparison for the auth middleware — avoids timing
+# attacks on the session token (deep-dive 02 §4.3/§4.4, sshx subtle::ConstantTimeEq).
+subtle = "2"
+
+# --- Pha 1: terminal (PTY over WebSocket) ---
+portable-pty = "0.9.0"
+# Cheap clones of PTY output chunks: one read is appended to the scrollback and
+# broadcast to every attached WebSocket, so the payload must be refcounted.
+bytes = "1"
+# `{"type":"input_b64"}` frames carry bytes a browser can't put in a JSON string
+# (raw control sequences / binary paste) — SPEC-001 §3.1.
+base64 = "0.23"
+# Error enums that map cleanly onto HTTP status codes (PtyError -> 400/404/500).
+thiserror = "2"
+
+# --- Pha 3: ACP orchestration ---
+agent-client-protocol = "2.0.0"
+
+# --- Pha 5: git integration ---
+git2 = "0.21.0"
+
+# --- Pha 6: search + process/system monitor ---
+ignore = "0.4.31"
+sysinfo = "0.39.6"
+
+# --- Pha 7: claws (autonomous agents + cron) ---
+tokio-cron-scheduler = "0.15.1"
+
+# --- Optional: NVIDIA GPU metrics (Pha 6, degrade gracefully if no driver) ---
+nvml-wrapper = { version = "0.12.1", optional = true }
+
+[features]
+default = []
+# Enable NVIDIA GPU monitoring via NVML. Off by default so builds without a
+# CUDA/driver toolchain still succeed (04 §7: Nvml::init() must fail cleanly).
+gpu = ["dep:nvml-wrapper"]
+
+# Test-only deps (Pha 0 integration tests). tower::ServiceExt::oneshot drives
+# the router in-process for HTTP assertions; tokio-tungstenite exercises the
+# real WS handshake (auth + echo round-trip) against an ephemeral listener.
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.29"
+futures-util = "0.3"

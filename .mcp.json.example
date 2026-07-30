@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Template for .mcp.json, which is gitignored because both values below are",
+    "machine-specific. Copy this file to .mcp.json and fix them up:",
+    "  - the PORT changes every time the context-engine host restarts;",
+    "  - the path segment after /mcp-repo/ is this checkout's absolute path with",
+    "    '/' and '-' replaced by '_', so it encodes the home directory.",
+    "Example for a checkout at /Users/alice/Code/spec-ade:",
+    "  http://127.0.0.1:<port>/mcp-repo/Users_alice_Code_spec_ade"
+  ],
+  "mcpServers": {
+    "codebase-retrieval": {
+      "type": "http",
+      "url": "http://127.0.0.1:PORT/mcp-repo/PATH_WITH_UNDERSCORES"
+    }
+  }
+}

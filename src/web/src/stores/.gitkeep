@@ -1,0 +1,3 @@
+# Pinia stores live here (Pha 0+). See docs/analysis/07-build-roadmap.md.
+# NOTE (04 §5): keep any CodeMirror EditorView in a shallowRef/raw, never in a
+# reactive store field — Vue proxying CM internals crashes/degrades the editor.

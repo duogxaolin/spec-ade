@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spec ADE</title>
+  </head>
+  <body>
+    <!-- SPA mount point. In production this index.html is embedded in the Rust
+         binary (rust-embed/memory-serve) and served as the fallback for every
+         unmatched route — see docs/analysis/02-architecture.md. -->
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

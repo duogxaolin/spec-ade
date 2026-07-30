@@ -1,0 +1,46 @@
+# --- Editor / OS ---
+.DS_Store
+.claude/settings.local.json
+
+# --- Rust (src/server) ---
+target/
+**/*.rs.bk
+# Cargo.lock IS committed on purpose: `src/server` builds a binary, not a library.
+# Cargo's own guidance is to ignore the lock only for libraries. Without it the two
+# machines resolve different dependency versions, and a green test run on one says
+# nothing about the other.
+
+# --- Node / frontend (src/web) ---
+node_modules/
+dist/
+.vite/
+*.local
+
+# --- Tauri (src/desktop) ---
+src/desktop/target/
+src/desktop/gen/
+src/desktop/dist/
+
+# --- Local runtime data dir ---
+# ~/.config/spec-ade lives outside the repo, but a repo-local override may exist.
+.spec-ade/
+spec-ade-data/
+
+# --- docs/: NOT published. ---
+# The whole tree stays local and private, on purpose:
+#   docs/analysis, docs/specs, docs/STATUS.md — design notes for this rebuild;
+#   docs/references/*  — 12 upstream repos kept for study (scripts/clone-references.sh);
+#   docs/spec-ade-clone — the upstream docs being reverse-engineered. It carries its
+#     own .git, so committing it would store a gitlink and leave a fresh clone with
+#     an EMPTY directory, losing the primary source.
+# Code comments still cite docs/... paths; those resolve only in a local checkout.
+docs/
+
+# --- Agent instructions: local working config, not part of the product. ---
+CLAUDE.md
+.claude/
+
+# --- Machine-local MCP config ---
+# .mcp.json holds a 127.0.0.1 URL whose port and absolute path are specific to one
+# machine. Copy .mcp.json.example and fill in the local values after cloning.
+.mcp.json
