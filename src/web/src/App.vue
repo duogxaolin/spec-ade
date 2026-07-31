@@ -10,6 +10,7 @@ import AcpPane from './components/AcpPane.vue';
 import EditorPane from './components/EditorPane.vue';
 import EditorTabs from './components/EditorTabs.vue';
 import FileTree from './components/FileTree.vue';
+import GitPanel from './components/git/GitPanel.vue';
 import TerminalPane from './components/TerminalPane.vue';
 import { apiFetch, resolveToken } from './api/client';
 import { useAcpStore } from './stores/acp';
@@ -32,7 +33,7 @@ const health = ref<'checking' | 'ok' | 'error'>('checking');
 const serverVersion = ref('');
 const notice = ref('');
 /** Which surface the main area shows. Pha 8 replaces this with real panes. */
-const view = ref<'editor' | 'terminal' | 'agent'>('editor');
+const view = ref<'editor' | 'terminal' | 'agent' | 'git'>('editor');
 
 const activeTerminal = computed(
   () => terminals.terminals.find((t) => t.id === terminals.activeId) ?? null,
@@ -168,6 +169,15 @@ async function reloadConflicted(): Promise<void> {
         >
           Agent
         </button>
+        <button
+          class="app__btn"
+          :class="{ 'app__btn--on': view === 'git' }"
+          role="tab"
+          :aria-selected="view === 'git'"
+          @click="view = 'git'"
+        >
+          Git
+        </button>
       </div>
 
       <button class="app__btn" :disabled="health !== 'ok'" @click="newTerminal">
@@ -248,6 +258,11 @@ async function reloadConflicted(): Promise<void> {
           <p v-else class="app__empty">
             {{ health === 'ok' ? 'No terminal open.' : 'Đang chờ backend…' }}
           </p>
+        </template>
+
+        <template v-else-if="view === 'git'">
+          <GitPanel v-if="projectId" :project-id="projectId" />
+          <p v-else class="app__empty">Thêm một project để xem Git.</p>
         </template>
 
         <!-- Kept mounted only while shown: its sockets hold the connection's

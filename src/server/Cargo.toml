@@ -52,6 +52,10 @@ agent-client-protocol = "2.0.0"
 
 # --- Pha 5: git integration ---
 git2 = "0.21.0"
+# SSE needs a real `Stream` at runtime; `futures-util` is a dev-dependency only.
+# `BroadcastStream` adapts the watcher's broadcast channel into the stream
+# `axum::response::Sse` wants ([SPEC-005 INVENTED-14]).
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # --- Pha 6: search + process/system monitor ---
 ignore = "0.4.31"

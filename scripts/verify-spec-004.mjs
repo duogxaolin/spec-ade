@@ -90,9 +90,14 @@ function checkBundle() {
   }
 
   const files = readdirSync(ASSETS);
-  const entryName = files.find((f) => /^index-[\w-]+\.js$/.test(f));
-  check('an entry chunk exists', entryName !== undefined, files.join(', '));
-  if (!entryName) return;
+  // More than one lazy dependency can be named `index-<hash>.js` (SPEC-005's
+  // @codemirror/merge chunk is one), so directory order cannot identify the app
+  // entry. The HTML manifest is the authoritative witness.
+  const html = readFileSync(join(DIST, 'index.html'), 'utf8');
+  const entryName = html.match(/src="\/assets\/(index-[\w-]+\.js)"/)?.[1];
+  check('an entry chunk exists', entryName !== undefined && files.includes(entryName),
+    entryName ?? files.join(', '));
+  if (!entryName || !files.includes(entryName)) return;
 
   const entry = readFileSync(join(ASSETS, entryName), 'utf8');
 

@@ -33,6 +33,7 @@ use serde_json::json;
 
 use crate::AppState;
 use crate::files::{self, CreateKind, FileError, PathError};
+use crate::routes::error::{ApiError, task_failed};
 use crate::settings::{ProjectEntry, SettingsError};
 
 pub fn router() -> Router<AppState> {
@@ -51,39 +52,6 @@ pub fn router() -> Router<AppState> {
 }
 
 // ---- error mapping ---------------------------------------------------------
-
-/// Handler-level error carrying the HTTP mapping (SPEC-002 §3.6).
-struct ApiError {
-    status: StatusCode,
-    group: &'static str,
-    detail: String,
-    extra: Option<serde_json::Value>,
-}
-
-impl ApiError {
-    fn new(status: StatusCode, group: &'static str, detail: impl Into<String>) -> Self {
-        Self {
-            status,
-            group,
-            detail: detail.into(),
-            extra: None,
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let mut body = json!({ "error": self.group, "detail": self.detail });
-        if let (Some(obj), Some(serde_json::Value::Object(extra))) =
-            (body.as_object_mut(), self.extra)
-        {
-            for (k, v) in extra {
-                obj.insert(k, v);
-            }
-        }
-        (self.status, Json(body)).into_response()
-    }
-}
 
 impl From<FileError> for ApiError {
     fn from(e: FileError) -> Self {
@@ -116,17 +84,8 @@ impl From<SettingsError> for ApiError {
     }
 }
 
-/// spawn_blocking join failure — a bug, not a client error.
-fn task_failed(e: impl std::fmt::Display) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "io",
-        format!("task failed: {e}"),
-    )
-}
-
 /// Look up a project and return its canonical root.
-fn project_root(state: &AppState, id: &str) -> Result<PathBuf, ApiError> {
+pub(crate) fn project_root(state: &AppState, id: &str) -> Result<PathBuf, ApiError> {
     state
         .settings
         .snapshot()
@@ -330,6 +289,10 @@ async fn delete_project(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    // Resolved before the removal: afterwards the project is gone from settings and
+    // its root cannot be looked up to cascade the git watcher.
+    let root = project_root(&state, &id).ok();
+
     let store = state.settings.clone();
     let removed = tokio::task::spawn_blocking({
         let id = id.clone();
@@ -352,6 +315,11 @@ async fn delete_project(
         let killed = state.acp.kill_project(&id).await;
         if killed > 0 {
             tracing::info!("project {id} deleted: killed {killed} ACP connection(s)");
+        }
+        // Cascade the git watcher too (SPEC-005): its poll task would otherwise
+        // keep running `git status` against a deregistered directory forever.
+        if let Some(root) = &root {
+            state.git.stop(root).await;
         }
         Ok(StatusCode::NO_CONTENT)
     } else {

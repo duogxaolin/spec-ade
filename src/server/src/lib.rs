@@ -52,6 +52,9 @@ pub struct AppState {
     /// Live ACP agent connections (SPEC-003). Like terminals, an agent outlives
     /// the sockets watching it — closing a tab must not kill a running turn.
     pub acp: acp::AcpManager,
+    /// Git status watchers, one poll task per watched project (SPEC-005). Shared
+    /// so ten tabs on one project cost one `git status` per interval, not ten.
+    pub git: git::GitWatchers,
 }
 
 impl AppState {
@@ -78,6 +81,7 @@ impl AppState {
             pty: pty::PtyManager::new(),
             settings: settings::SettingsStore::new(loaded, settings_path),
             acp: acp::AcpManager::new(),
+            git: git::GitWatchers::new(),
             data_dir,
         }
     }
@@ -105,6 +109,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::projects::router())
         .merge(routes::acp::router())
         .merge(routes::sessions::router())
+        .merge(routes::git::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

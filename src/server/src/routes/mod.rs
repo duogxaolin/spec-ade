@@ -9,6 +9,8 @@
 //! wired into the top-level router per their roadmap phase
 //! (docs/analysis/07-build-roadmap.md).
 
+// error — the `{error, detail}` JSON shape shared by every handler (SPEC-002 §3.6).
+pub mod error;
 // settings — GET/PUT /api/settings (partial update Option<Option<T>>).
 // Implemented: SPEC-002.
 pub mod settings;
