@@ -125,6 +125,38 @@ function mount(path: string, state: EditorState): void {
   mountedPath = path;
   v.setState(state);
   applyConfig();
+  flushPendingReveal();
+}
+
+/**
+ * A line to jump to once its document is mounted, from a search result (D39).
+ *
+ * Held rather than applied immediately because the click that asks for it may
+ * arrive before the tab's content has been read — `open` is a round trip, and
+ * `syncToActive` runs on a watcher, not synchronously.
+ */
+let pendingReveal: { path: string; line: number } | null = null;
+
+function flushPendingReveal(): void {
+  const target = pendingReveal;
+  const v = view.value;
+  if (!target || !v || target.path !== mountedPath) return;
+  pendingReveal = null;
+  // The server's line numbers are 1-based and can point past a file that shrank
+  // between the search and the click.
+  const number = Math.min(Math.max(target.line, 1), v.state.doc.lines);
+  const line = v.state.doc.line(number);
+  v.dispatch({
+    selection: { anchor: line.from },
+    effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+  });
+  v.focus();
+}
+
+/** Scroll to and select the start of `line` in `path` (1-based). */
+function reveal(path: string, line: number): void {
+  pendingReveal = { path, line };
+  flushPendingReveal();
 }
 
 /**
@@ -201,7 +233,7 @@ watch(
   applyConfig,
 );
 
-defineExpose({ seed, focus: () => view.value?.focus() });
+defineExpose({ seed, reveal, focus: () => view.value?.focus() });
 </script>
 
 <template>

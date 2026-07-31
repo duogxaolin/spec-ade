@@ -11,6 +11,8 @@ import EditorPane from './components/EditorPane.vue';
 import EditorTabs from './components/EditorTabs.vue';
 import FileTree from './components/FileTree.vue';
 import GitPanel from './components/git/GitPanel.vue';
+import MonitorPanel from './components/monitor/MonitorPanel.vue';
+import SearchPanel from './components/search/SearchPanel.vue';
 import TerminalPane from './components/TerminalPane.vue';
 import { apiFetch, resolveToken } from './api/client';
 import { useAcpStore } from './stores/acp';
@@ -33,7 +35,7 @@ const health = ref<'checking' | 'ok' | 'error'>('checking');
 const serverVersion = ref('');
 const notice = ref('');
 /** Which surface the main area shows. Pha 8 replaces this with real panes. */
-const view = ref<'editor' | 'terminal' | 'agent' | 'git'>('editor');
+const view = ref<'editor' | 'terminal' | 'agent' | 'git' | 'search' | 'monitor'>('editor');
 
 const activeTerminal = computed(
   () => terminals.terminals.find((t) => t.id === terminals.activeId) ?? null,
@@ -81,6 +83,14 @@ async function openFile(path: string): Promise<void> {
   if (result?.kind === 'text') {
     editorPane.value?.seed(result.path, result.content);
   }
+}
+
+/** Open a search hit at its line (D39). */
+async function openMatch(path: string, line: number): Promise<void> {
+  await openFile(path);
+  // After the await the tab exists but its state may not be mounted yet; the
+  // pane holds the request until it is.
+  editorPane.value?.reveal(path, line);
 }
 
 async function addProject(): Promise<void> {
@@ -178,6 +188,24 @@ async function reloadConflicted(): Promise<void> {
         >
           Git
         </button>
+        <button
+          class="app__btn"
+          :class="{ 'app__btn--on': view === 'search' }"
+          role="tab"
+          :aria-selected="view === 'search'"
+          @click="view = 'search'"
+        >
+          Tìm
+        </button>
+        <button
+          class="app__btn"
+          :class="{ 'app__btn--on': view === 'monitor' }"
+          role="tab"
+          :aria-selected="view === 'monitor'"
+          @click="view = 'monitor'"
+        >
+          Máy
+        </button>
       </div>
 
       <button class="app__btn" :disabled="health !== 'ok'" @click="newTerminal">
@@ -263,6 +291,16 @@ async function reloadConflicted(): Promise<void> {
         <template v-else-if="view === 'git'">
           <GitPanel v-if="projectId" :project-id="projectId" />
           <p v-else class="app__empty">Thêm một project để xem Git.</p>
+        </template>
+
+        <template v-else-if="view === 'search'">
+          <SearchPanel :project-id="projectId" @open="openMatch" />
+        </template>
+
+        <!-- Unmounted when hidden: the server keeps sampling while a subscriber
+             is attached, and a hidden panel is not a reader (SPEC-006 §5.4). -->
+        <template v-else-if="view === 'monitor'">
+          <MonitorPanel />
         </template>
 
         <!-- Kept mounted only while shown: its sockets hold the connection's

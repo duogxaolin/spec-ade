@@ -25,6 +25,8 @@ pub mod routes;
 // Later-phase module stubs (docs/analysis/07-build-roadmap.md).
 pub mod acp;
 pub mod git;
+pub mod monitor;
+pub mod search;
 
 use axum::{
     Json, Router, middleware,
@@ -55,6 +57,10 @@ pub struct AppState {
     /// Git status watchers, one poll task per watched project (SPEC-005). Shared
     /// so ten tabs on one project cost one `git status` per interval, not ten.
     pub git: git::GitWatchers,
+    /// Host metrics sampler (SPEC-006). One `sysinfo::System` for the whole
+    /// server: CPU usage is a delta between refreshes, so a per-request instance
+    /// would report 0% forever.
+    pub monitor: monitor::MetricsSampler,
 }
 
 impl AppState {
@@ -82,6 +88,7 @@ impl AppState {
             settings: settings::SettingsStore::new(loaded, settings_path),
             acp: acp::AcpManager::new(),
             git: git::GitWatchers::new(),
+            monitor: monitor::MetricsSampler::new(),
             data_dir,
         }
     }
@@ -110,6 +117,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::acp::router())
         .merge(routes::sessions::router())
         .merge(routes::git::router())
+        .merge(routes::search::router())
+        .merge(routes::system::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,
