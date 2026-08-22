@@ -1,9 +1,8 @@
-//! Phase 1 integration tests — SPEC-001 (terminal over WebSocket).
+//! Terminal integration tests — SPEC-001 (terminal over WebSocket).
 //!
-//! These drive a real server on an ephemeral port and a real `tokio-tungstenite`
-//! client, because the things most likely to break are exactly the things an
-//! in-process router test can't see: the PTY threads, the broadcast/scrollback
-//! handoff, and the auth/origin gates running during the WS upgrade.
+//! Same shape as the other suites: a real server on an ephemeral port, because
+//! the auth and Origin layers plus the PTY threads and broadcast/scrollback
+//! handoff are exactly what an in-process router test wouldn't exercise.
 //!
 //! Every test spawns `/bin/sh` explicitly rather than the user's `$SHELL` — a
 //! developer's zsh with a heavyweight prompt would make output assertions

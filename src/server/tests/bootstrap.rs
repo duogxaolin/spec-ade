@@ -1,4 +1,4 @@
-//! Phase 0 integration tests (07-build-roadmap.md Pha 0 deliverable #7).
+//! Bootstrap integration tests (07-build-roadmap.md Pha 0 deliverable #7).
 //!
 //! Two styles:
 //! - HTTP assertions drive the router in-process via `tower::ServiceExt::oneshot`

@@ -1,7 +1,8 @@
-//! Phase 2 integration tests — SPEC-002 (projects, file tree, files, settings).
+//! Projects & files integration tests — SPEC-002 (projects, file tree, files,
+//! settings).
 //!
-//! Same shape as phase1: a real server on an ephemeral port, because the auth
-//! and Origin layers plus the spawn_blocking seams are exactly what an
+//! Same shape as the terminal suite: a real server on an ephemeral port, because
+//! the auth and Origin layers plus the spawn_blocking seams are exactly what an
 //! in-process router test wouldn't exercise.
 //!
 //! Each test gets its own data dir (via `AppState::with_data_dir`) and its own
@@ -677,7 +678,7 @@ async fn new_routes_require_token_and_origin() {
     assert_eq!(status, TStatus::FORBIDDEN);
 }
 
-// ---- minimal HTTP client (same rationale as phase1) ------------------------
+// ---- minimal HTTP client (same rationale as the terminal suite) ------------
 
 mod reqwest_lite {
     use serde_json::Value;

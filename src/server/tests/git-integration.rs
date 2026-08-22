@@ -1,4 +1,4 @@
-//! Phase 5 integration tests — SPEC-005 (git integration).
+//! Git integration tests — SPEC-005.
 //!
 //! These run against **real git repositories** in temp dirs, driven through the
 //! real HTTP surface. That is the point: the whole spec is about matching what
@@ -136,7 +136,7 @@ fn git(root: &Path, args: &[&str]) -> String {
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
-        .expect("git must be on PATH for phase5 tests");
+        .expect("git must be on PATH for the git-integration tests");
     assert!(
         output.status.success(),
         "git {args:?} failed: {}{}",
@@ -2241,7 +2241,7 @@ async fn every_git_endpoint_needs_the_token() {
     }
 }
 
-// ---- minimal HTTP client (same rationale as phase1) ------------------------
+// ---- minimal HTTP client (same rationale as the terminal suite) ------------
 
 mod reqwest_lite {
     use serde_json::Value;

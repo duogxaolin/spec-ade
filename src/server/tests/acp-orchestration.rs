@@ -1,6 +1,6 @@
-//! Phase 3 integration tests — SPEC-003 (ACP orchestration).
+//! ACP orchestration integration tests — SPEC-003.
 //!
-//! Same shape as phase1/phase2: a real server on an ephemeral port, driving a
+//! Same shape as the other suites: a real server on an ephemeral port, driving a
 //! **real ACP agent subprocess** — the `mock_acp_agent` dev binary, which speaks
 //! the protocol using the same crate the server does. Tests never touch `claude`
 //! or `codex`: those need network and credentials and are non-deterministic, so
@@ -1594,7 +1594,7 @@ async fn acp_routes_require_auth() {
     }
 }
 
-// ---- minimal HTTP client (same rationale as phase1/phase2) -----------------
+// ---- minimal HTTP client (same rationale as the other suites) --------------
 //
 // Copied rather than shared: an integration test binary can't import from a
 // sibling test file, and a `tests/common/` module would be compiled into every

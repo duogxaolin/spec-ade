@@ -1,4 +1,4 @@
-//! Phase 6 integration tests — SPEC-006 (search + process monitor).
+//! Search + process monitor integration tests — SPEC-006.
 //!
 //! Two halves with opposite testing strategies, both driven through the real HTTP
 //! surface:
@@ -181,14 +181,22 @@ fn write(root: &Path, rel: &str, content: &str) {
 fn search_fixture() -> PathBuf {
     let root = fresh_dir();
     write(&root, ".gitignore", "ignored.txt\nbuild/\n");
-    write(&root, "src/main.rs", "fn main() {\n    let needle = 1;\n}\n");
+    write(
+        &root,
+        "src/main.rs",
+        "fn main() {\n    let needle = 1;\n}\n",
+    );
     write(&root, "src/lib.rs", "// no match here\npub fn f() {}\n");
     write(&root, "src/app.ts", "const needle = 'NEEDLE';\n");
     write(&root, "docs/readme.md", "the needle in the haystack\n");
     write(&root, "ignored.txt", "needle in an ignored file\n");
     write(&root, "build/out.js", "needle in an ignored dir\n");
     write(&root, ".git/config", "needle inside dot-git\n");
-    write(&root, "node_modules/dep/index.js", "needle in a dependency\n");
+    write(
+        &root,
+        "node_modules/dep/index.js",
+        "needle in a dependency\n",
+    );
     write(&root, ".env", "API_KEY=needle\n");
     // Binary: the needle sits before the NUL, so only `BinaryDetection` can
     // keep it out of the results.
@@ -274,7 +282,10 @@ async fn search_counts_agree_with_what_was_streamed() {
     // Files-with-a-match is at most files-scanned, and both are positive here.
     let files = run.done["files"].as_u64().unwrap();
     let scanned = run.done["filesScanned"].as_u64().unwrap();
-    assert!(files > 0 && scanned >= files, "files={files} scanned={scanned}");
+    assert!(
+        files > 0 && scanned >= files,
+        "files={files} scanned={scanned}"
+    );
     assert_eq!(run.done["truncated"], false);
 }
 
@@ -301,15 +312,13 @@ async fn search_case_and_regex_and_word_toggles_change_the_result_set() {
 
     // Case-sensitive: `NEEDLE` in app.ts no longer counts, but `needle` does.
     let sensitive = server
-        .search(&format!(
-            "/api/projects/{id}/search?query=NEEDLE&case=true"
-        ))
+        .search(&format!("/api/projects/{id}/search?query=NEEDLE&case=true"))
         .await;
     assert!(
-        sensitive.matches.iter().all(|m| m["text"]
-            .as_str()
-            .unwrap()
-            .contains("NEEDLE")),
+        sensitive
+            .matches
+            .iter()
+            .all(|m| m["text"].as_str().unwrap().contains("NEEDLE")),
         "case=true leaked a lowercase match"
     );
 
@@ -317,7 +326,10 @@ async fn search_case_and_regex_and_word_toggles_change_the_result_set() {
     let literal = server
         .search(&format!("/api/projects/{id}/search?query=n..dle"))
         .await;
-    assert!(literal.matches.is_empty(), "literal search behaved as regex");
+    assert!(
+        literal.matches.is_empty(),
+        "literal search behaved as regex"
+    );
 
     let regex = server
         .search(&format!(
@@ -329,9 +341,7 @@ async fn search_case_and_regex_and_word_toggles_change_the_result_set() {
     // `word=true` must not match `needles`; the fixture has none, so assert the
     // opposite direction — a plain word still matches.
     let word = server
-        .search(&format!(
-            "/api/projects/{id}/search?query=needle&word=true"
-        ))
+        .search(&format!("/api/projects/{id}/search?query=needle&word=true"))
         .await;
     assert!(word.has("src/main.rs"));
 }
@@ -372,7 +382,11 @@ async fn search_skips_binary_and_oversized_files_but_truncates_long_lines() {
         .await;
 
     assert!(!run.has("blob.bin"), "binary emitted: {:?}", run.paths());
-    assert!(!run.has("huge.log"), "oversized file read: {:?}", run.paths());
+    assert!(
+        !run.has("huge.log"),
+        "oversized file read: {:?}",
+        run.paths()
+    );
 
     // A 10 KB line is reported, but cut — and every surviving range must still be
     // sliceable, which is what the frontend does with it.
@@ -382,11 +396,18 @@ async fn search_skips_binary_and_oversized_files_but_truncates_long_lines() {
         .find(|m| m["path"] == "min.js")
         .expect("min.js must match");
     let text = long["text"].as_str().unwrap();
-    assert!(text.len() <= 4096, "line not truncated: {} bytes", text.len());
+    assert!(
+        text.len() <= 4096,
+        "line not truncated: {} bytes",
+        text.len()
+    );
     for range in long["ranges"].as_array().unwrap() {
         let start = range[0].as_u64().unwrap() as usize;
         let end = range[1].as_u64().unwrap() as usize;
-        assert!(text.get(start..end).is_some(), "range {start}..{end} invalid");
+        assert!(
+            text.get(start..end).is_some(),
+            "range {start}..{end} invalid"
+        );
     }
 }
 
@@ -418,9 +439,7 @@ async fn search_globs_narrow_and_exclude() {
     // One include glob must hide everything else — and must not hide itself, the
     // `ignore::Override` inversion trap.
     let only_rs = server
-        .search(&format!(
-            "/api/projects/{id}/search?query=needle&glob=*.rs"
-        ))
+        .search(&format!("/api/projects/{id}/search?query=needle&glob=*.rs"))
         .await;
     assert_eq!(only_rs.paths(), vec!["src/main.rs".to_string()]);
 
@@ -448,9 +467,7 @@ async fn search_path_scope_limits_the_walk_and_refuses_to_escape() {
     let id = server.search_project().await;
 
     let scoped = server
-        .search(&format!(
-            "/api/projects/{id}/search?query=needle&path=src"
-        ))
+        .search(&format!("/api/projects/{id}/search?query=needle&path=src"))
         .await;
     assert!(!scoped.matches.is_empty());
     for path in scoped.paths() {
@@ -544,7 +561,11 @@ async fn search_rejects_a_bad_request_before_opening_the_stream() {
     // left a space in must not start a walk over the whole project that matches
     // every indented line.
     let (status, body) = server
-        .req("GET", &format!("/api/projects/{id}/search?query=%20%20"), None)
+        .req(
+            "GET",
+            &format!("/api/projects/{id}/search?query=%20%20"),
+            None,
+        )
         .await;
     assert_eq!(status, TStatus::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "search");
@@ -652,7 +673,9 @@ async fn metrics_reports_plausible_invariants() {
     // an enumeration silently returning nothing. Sorted by CPU by default, and a
     // test process is busy, so it is in the top 200.
     let own = std::process::id();
-    let (status, all) = server.req("GET", "/api/system/metrics?topN=200", None).await;
+    let (status, all) = server
+        .req("GET", "/api/system/metrics?topN=200", None)
+        .await;
     assert_eq!(status, TStatus::OK);
     let found = all["processes"]
         .as_array()
@@ -938,9 +961,9 @@ async fn every_new_route_requires_the_token() {
 
 // ---- minimal HTTP/SSE client ----------------------------------------------
 //
-// Copied from `tests/phase5.rs` rather than shared: integration test binaries
-// cannot import each other, and a `tests/common/` module would be compiled as its
-// own test target.
+// Copied from `tests/git-integration.rs` rather than shared: integration test
+// binaries cannot import each other, and a `tests/common/` module would be
+// compiled as its own test target.
 
 mod reqwest_lite {
     use serde_json::Value;
