@@ -16,11 +16,16 @@ verified against the real release binary before the next one starts.
 | Terminal — PTY over WebSocket | done |
 | File tree + editor (CodeMirror 6), settings + projects CRUD | done |
 | ACP orchestration — spawn agent, stream updates, `?after_seq=N` replay | done |
-| Chat UI, git, search, process monitor, scheduled agents, panes, Tauri shell | not started |
+| Chat UI — markdown, syntax highlighting, diffs, math, mermaid | done |
+| Git — status, diff, log, branches, conflict resolution, SSE watch | done |
+| Search — streaming ripgrep across projects | done |
+| Process monitor — live metrics, kill | done |
+| Claws — scheduled autonomous agents (cron), skills | done |
+| Pane system + layout, Tauri shell, licensing/PWA | planned |
 
-Current gates: `clippy -D warnings` clean, 164 backend tests, 68 frontend tests,
-`vue-tsc --noEmit` clean, and a 71-check runtime script driving the release binary
-over HTTP + WebSocket.
+Current gates: `cargo fmt --check`, `clippy -D warnings` clean, 407 backend
+tests, 546 frontend tests, `vue-tsc --noEmit` clean, and six runtime scripts
+(296 checks total) driving the release binary over HTTP + WebSocket + SSE.
 
 Design notes, per-subsystem specs and the running status log are kept in a private
 `docs/` tree and are not published. Code comments cite paths under `docs/`; those
@@ -73,9 +78,9 @@ on first load; treat that URL as a credential.
 Tests:
 
 ```sh
-cd src/server && cargo test          # 164
-cd src/web    && npx vitest run      # 68
-node scripts/verify-spec-003.mjs     # 71 checks against the release binary
+cd src/server && cargo test                        # 407
+cd ../web     && npx vitest run                    # 546
+cd ../..      && for s in scripts/verify-spec-*.mjs; do node "$s"; done   # 296 checks
 ```
 
 ## Setting up a fresh clone

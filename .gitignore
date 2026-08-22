@@ -44,3 +44,8 @@ CLAUDE.md
 # .mcp.json holds a 127.0.0.1 URL whose port and absolute path are specific to one
 # machine. Copy .mcp.json.example and fill in the local values after cloning.
 .mcp.json
+
+# --- OpenSpec working state ---
+# Change proposals, designs and task lists are local working documents,
+# not product code; they stay untracked alongside docs/.
+openspec/
