@@ -88,6 +88,11 @@ pub struct Settings {
     /// first run, edited by hand until a management UI exists.
     #[serde(default = "crate::acp::agent::default_agents")]
     pub acp_agents: Vec<crate::acp::agent::AcpAgentEntry>,
+
+    /// Persisted Claw definitions (SPEC-007 §5.5). Mutated only through the
+    /// claws API; the runtime status lives in RAM ([INVENTED-10]).
+    #[serde(default)]
+    pub claws: Vec<crate::claws::ClawDefinition>,
 }
 
 impl Default for Settings {
@@ -101,6 +106,7 @@ impl Default for Settings {
             editor: EditorSettings::default(),
             projects: Vec::new(),
             acp_agents: crate::acp::agent::default_agents(),
+            claws: Vec::new(),
         }
     }
 }

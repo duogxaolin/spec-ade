@@ -27,8 +27,10 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelNotification, ClientCapabilities, ContentBlock, FileSystemCapabilities,
-    InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, ReadTextFileRequest,
-    RequestPermissionRequest, SessionNotification, TextContent, WriteTextFileRequest,
+    InitializeRequest, InitializeResponse, NewSessionRequest, PermissionOptionId, PromptRequest,
+    ReadTextFileRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, TextContent,
+    WriteTextFileRequest,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 
@@ -37,6 +39,7 @@ use super::event::{AcpEvent, SessionState};
 use super::fs_bridge;
 use super::log::{EventLog, LoggedEvent, Replay};
 use super::permission::{PendingPermissions, PermissionError};
+use super::policy::{Decision, PermissionPolicy};
 
 /// How often expired permission requests are swept ([INVENTED-6]).
 const PERMISSION_SWEEP_INTERVAL: Duration = Duration::from_secs(10);
@@ -360,7 +363,24 @@ impl AcpConnection {
         project_id: &str,
         limits: AcpLimits,
     ) -> Result<Self, AcpError> {
-        let id = uuid::Uuid::new_v4().to_string();
+        Self::spawn_with(entry, project_id, limits, PermissionPolicy::default(), None).await
+    }
+
+    /// [`Self::spawn`] with the two knobs a Claw needs (SPEC-007 §5.2, §5.3).
+    ///
+    /// `policy` is injected the same way [`AcpLimits`] is — it is a property of
+    /// *this* connection, and a global would make two connections with different
+    /// modes impossible. `id` is supplied so a Claw's connection can be named
+    /// `claw:{claw_id}` and found again after a restart; `None` keeps the
+    /// SPEC-003 behaviour of a fresh UUID.
+    pub async fn spawn_with(
+        entry: &AcpAgentEntry,
+        project_id: &str,
+        limits: AcpLimits,
+        policy: PermissionPolicy,
+        id: Option<String>,
+    ) -> Result<Self, AcpError> {
+        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let (cmd_tx, cmd_rx) = mpsc::channel::<AcpCommand>(32);
         let sessions = Sessions::default();
         let permissions = PendingPermissions::new();
@@ -387,6 +407,7 @@ impl AcpConnection {
             watchers: watchers.clone(),
             closed: closed.clone(),
             limits,
+            policy,
         };
         tokio::spawn(task.run(agent, cmd_rx, ready_tx));
 
@@ -554,6 +575,8 @@ struct ConnectionTask {
     watchers: Watchers,
     closed: Arc<std::sync::atomic::AtomicBool>,
     limits: AcpLimits,
+    /// How `session/request_permission` is answered (SPEC-007 §5.2).
+    policy: PermissionPolicy,
 }
 
 impl ConnectionTask {
@@ -568,6 +591,7 @@ impl ConnectionTask {
         let permissions = self.permissions.clone();
         let watchers = self.watchers.clone();
         let limits = self.limits;
+        let policy = self.policy;
 
         // Every handler captures only `Send` state: `Sessions` and
         // `PendingPermissions` are `Arc<Mutex<…>>` clones.
@@ -589,7 +613,7 @@ impl ConnectionTask {
                     let sessions = sessions.clone();
                     let permissions = permissions.clone();
                     async move |req: RequestPermissionRequest, responder, _conn| {
-                        handle_permission(&sessions, &permissions, req, responder);
+                        handle_permission(&sessions, &permissions, policy, req, responder);
                         Ok(())
                     }
                 },
@@ -743,9 +767,14 @@ fn handle_session_update(sessions: &Sessions, notif: SessionNotification) {
 }
 
 /// Park a permission request and tell the user about it.
+/// Answer, or park, one `session/request_permission` (SPEC-007 §5.2).
+///
+/// The branch happens **before** parking, but the event log is written either
+/// way: `auto_approve` is allowed to skip the user, never the audit trail (§9.1).
 fn handle_permission(
     sessions: &Sessions,
     permissions: &PendingPermissions,
+    policy: PermissionPolicy,
     req: RequestPermissionRequest,
     responder: agent_client_protocol::Responder<
         agent_client_protocol::schema::v1::RequestPermissionResponse,
@@ -771,20 +800,68 @@ fn handle_permission(
                 .unwrap_or_else(|| "other".to_string()),
         })
         .collect();
+    let tool_call = serde_json::to_value(&req.tool_call).unwrap_or(serde_json::Value::Null);
 
-    let request_id = permissions.park(
-        &session_id,
-        options.iter().map(|o| o.option_id.clone()).collect(),
-        responder,
-    );
-
-    // Logged (not just broadcast) so a page reload still shows the pending
-    // prompt — otherwise the agent waits on a question nobody can see.
-    slot.emit(AcpEvent::PermissionRequest {
-        request_id,
-        tool_call: serde_json::to_value(&req.tool_call).unwrap_or(serde_json::Value::Null),
-        options,
-    });
+    match policy.decide(&req.options) {
+        Decision::Ask => {
+            let request_id = permissions.park(
+                &session_id,
+                options.iter().map(|o| o.option_id.clone()).collect(),
+                responder,
+            );
+            // Logged (not just broadcast) so a page reload still shows the pending
+            // prompt — otherwise the agent waits on a question nobody can see.
+            slot.emit(AcpEvent::PermissionRequest {
+                request_id,
+                tool_call,
+                options,
+            });
+        }
+        Decision::Select(option_id) => {
+            // The id is minted here rather than by `park`: nothing is parked, but
+            // the pair of events must still be correlatable in the log.
+            let request_id = uuid::Uuid::new_v4().to_string();
+            slot.emit(AcpEvent::PermissionRequest {
+                request_id: request_id.clone(),
+                tool_call,
+                options,
+            });
+            tracing::info!(
+                "acp: {} answered permission {request_id} with option {option_id}",
+                policy.as_str()
+            );
+            let outcome = RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                PermissionOptionId::from(option_id.clone()),
+            ));
+            if let Err(e) = responder.respond(RequestPermissionResponse::new(outcome)) {
+                tracing::debug!("acp: could not deliver automatic permission outcome: {e}");
+            }
+            slot.emit(AcpEvent::PermissionResolved {
+                request_id,
+                outcome: format!("selected:{option_id}"),
+            });
+        }
+        Decision::Refuse(reason) => {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            slot.emit(AcpEvent::PermissionRequest {
+                request_id: request_id.clone(),
+                tool_call,
+                options,
+            });
+            tracing::warn!(
+                "acp: {} refused permission {request_id}: {reason}",
+                policy.as_str()
+            );
+            let _ = responder.respond_with_error(
+                agent_client_protocol::Error::invalid_params()
+                    .data(serde_json::json!({ "sessionId": session_id, "reason": reason })),
+            );
+            slot.emit(AcpEvent::PermissionResolved {
+                request_id,
+                outcome: "refused".to_string(),
+            });
+        }
+    }
 }
 
 /// Serve commands until `Shutdown`, the channel closes, or the transport dies.

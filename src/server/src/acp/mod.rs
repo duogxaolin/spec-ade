@@ -28,6 +28,7 @@ pub mod event;
 pub mod fs_bridge;
 pub mod log;
 pub mod permission;
+pub mod policy;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -126,6 +127,26 @@ impl AcpManager {
         project_id: &str,
     ) -> Result<AcpConnection, AcpError> {
         let conn = AcpConnection::spawn(entry, project_id, self.limits).await?;
+        lock(&self.inner).insert(conn.id.clone(), conn.clone());
+        Ok(conn)
+    }
+
+    /// [`Self::spawn`] with the two knobs a Claw needs (SPEC-007 §5.3).
+    ///
+    /// Registered here, not spawned bare through [`AcpConnection::spawn_with`],
+    /// because `claws.mdx:43` gives the connection the recognisable id
+    /// `claw:{claw_id}` — an id that exists so a human can spot it in a listing
+    /// is pointless if the listing never shows it. Registration also enrolls the
+    /// connection in [`Self::get`]'s use-driven reaping and in
+    /// [`Self::kill_project`], which the project-delete cascade (§5.6) needs.
+    pub async fn spawn_with(
+        &self,
+        entry: &agent::AcpAgentEntry,
+        project_id: &str,
+        policy: policy::PermissionPolicy,
+        id: Option<String>,
+    ) -> Result<AcpConnection, AcpError> {
+        let conn = AcpConnection::spawn_with(entry, project_id, self.limits, policy, id).await?;
         lock(&self.inner).insert(conn.id.clone(), conn.clone());
         Ok(conn)
     }

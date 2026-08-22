@@ -57,6 +57,13 @@ async fn main() {
 
     let app = build_router(state.clone());
 
+    // autoStart ([INVENTED-5], SPEC-007 §5.7): enabled claws come up at boot, so
+    // a schedule keeps firing with no UI open. Best-effort per claw.
+    {
+        let loaded = state.settings.snapshot();
+        state.claws.autostart(&loaded, &state.acp).await;
+    }
+
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port)
         .parse()
         .expect("invalid host/port");
@@ -90,6 +97,11 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
+
+    // Graceful shutdown (SPEC-007 §5.7): the serve future resolved, meaning the
+    // listener is closed — no request can start a new claw now. Abort every loop
+    // and kill its connection before the process exits.
+    state.claws.stop_all(&state.acp).await;
 }
 
 /// Best-effort browser open. Non-fatal: a failure just logs a warning so the

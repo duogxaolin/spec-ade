@@ -300,6 +300,11 @@ async fn delete_project(
             store.update(move |settings| {
                 let before = settings.projects.len();
                 settings.projects.retain(|p| p.id != id);
+                // Cascade claws (SPEC-007 §5.6): an orphaned definition would keep
+                // spawning agents against the deregistered directory. Removed in
+                // the same write as the project so a crash between the two steps
+                // cannot leave a claw pointing at nothing.
+                settings.claws.retain(|c| c.project_id != id);
                 Ok(settings.projects.len() < before)
             })
         }
@@ -312,6 +317,10 @@ async fn delete_project(
         // session `cwd` and `fs/*` sandbox root. Left running they would keep
         // working against a directory the user just deregistered.
         // TODO(spec-008): cascade layout (06:23 also requires it; no layout yet).
+        // Cascade the claw runtime first (SPEC-007 §5.6): its loop tasks hold
+        // ACP connections of their own, and aborting them before `kill_project`
+        // means no trigger can fire mid-teardown.
+        state.claws.stop_project(&id, &state.acp).await;
         let killed = state.acp.kill_project(&id).await;
         if killed > 0 {
             tracing::info!("project {id} deleted: killed {killed} ACP connection(s)");

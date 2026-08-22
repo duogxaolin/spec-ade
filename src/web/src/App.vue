@@ -14,6 +14,7 @@ import GitPanel from './components/git/GitPanel.vue';
 import MonitorPanel from './components/monitor/MonitorPanel.vue';
 import SearchPanel from './components/search/SearchPanel.vue';
 import TerminalPane from './components/TerminalPane.vue';
+import ClawsPanel from './components/claws/ClawsPanel.vue';
 import { apiFetch, resolveToken } from './api/client';
 import { useAcpStore } from './stores/acp';
 import { useEditorStore } from './stores/editor';
@@ -35,7 +36,7 @@ const health = ref<'checking' | 'ok' | 'error'>('checking');
 const serverVersion = ref('');
 const notice = ref('');
 /** Which surface the main area shows. Pha 8 replaces this with real panes. */
-const view = ref<'editor' | 'terminal' | 'agent' | 'git' | 'search' | 'monitor'>('editor');
+const view = ref<'editor' | 'terminal' | 'agent' | 'git' | 'search' | 'monitor' | 'claws'>('editor');
 
 const activeTerminal = computed(
   () => terminals.terminals.find((t) => t.id === terminals.activeId) ?? null,
@@ -206,6 +207,15 @@ async function reloadConflicted(): Promise<void> {
         >
           Máy
         </button>
+        <button
+          class="app__btn"
+          :class="{ 'app__btn--on': view === 'claws' }"
+          role="tab"
+          :aria-selected="view === 'claws'"
+          @click="view = 'claws'"
+        >
+          Claws
+        </button>
       </div>
 
       <button class="app__btn" :disabled="health !== 'ok'" @click="newTerminal">
@@ -301,6 +311,12 @@ async function reloadConflicted(): Promise<void> {
              is attached, and a hidden panel is not a reader (SPEC-006 §5.4). -->
         <template v-else-if="view === 'monitor'">
           <MonitorPanel />
+        </template>
+
+        <!-- Claws hold no sockets of their own (status is polled per action),
+             so mounting only while shown costs nothing and keeps drafts local. -->
+        <template v-else-if="view === 'claws'">
+          <ClawsPanel />
         </template>
 
         <!-- Kept mounted only while shown: its sockets hold the connection's

@@ -20,7 +20,8 @@ pub mod projects;
 // sessions — POST/GET/DELETE session lifecycle under a project.
 // Implemented: SPEC-003.
 pub mod sessions;
-// TODO(phase-7): claws     — list/create/update/delete + start/stop autonomous agents.
+// claws — CRUD + start/stop autonomous agents + GET /api/projects/{id}/skills.
+// Implemented: SPEC-007.
 pub mod claws;
 // acp — POST /api/acp/spawn + WS /api/acp/{id}/ws (?after_seq=N replay).
 // Implemented: SPEC-003.

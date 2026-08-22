@@ -22,8 +22,9 @@ pub mod ws;
 pub mod pty;
 pub mod routes;
 
-// Later-phase module stubs (docs/analysis/07-build-roadmap.md).
+// Later-phase modules (docs/analysis/07-build-roadmap.md).
 pub mod acp;
+pub mod claws;
 pub mod git;
 pub mod monitor;
 pub mod search;
@@ -61,6 +62,9 @@ pub struct AppState {
     /// server: CPU usage is a delta between refreshes, so a per-request instance
     /// would report 0% forever.
     pub monitor: monitor::MetricsSampler,
+    /// Running Claw registry (SPEC-007). Like terminals and agents, a Claw
+    /// outlives the sockets watching it — the loop task owns the connection.
+    pub claws: claws::ClawRuntime,
 }
 
 impl AppState {
@@ -89,6 +93,7 @@ impl AppState {
             acp: acp::AcpManager::new(),
             git: git::GitWatchers::new(),
             monitor: monitor::MetricsSampler::new(),
+            claws: claws::ClawRuntime::new(),
             data_dir,
         }
     }
@@ -119,6 +124,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::git::router())
         .merge(routes::search::router())
         .merge(routes::system::router())
+        // Claws (SPEC-007): CRUD + start/stop + the skills catalogue route.
+        .merge(routes::claws::router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_auth,

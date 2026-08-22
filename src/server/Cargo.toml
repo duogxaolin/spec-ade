@@ -74,11 +74,19 @@ grep-matcher = "0.1.9"
 # every occurrence. Already in the tree via `url`; named here because we call it.
 form_urlencoded = "1.2.2"
 
-# --- Pha 7: claws (autonomous agents + cron) ---
-tokio-cron-scheduler = "0.15.1"
-
 # --- Optional: NVIDIA GPU metrics (Pha 6, degrade gracefully if no driver) ---
 nvml-wrapper = { version = "0.12.1", optional = true }
+# --- Pha 7: claws (autonomous agents + cron) ---
+# `croner` directly, NOT `tokio-cron-scheduler` (SPEC-007 §3.3 [INVENTED-2]): the
+# scheduler crate hard-codes `Seconds::Required` + `dom_and_dow(true)`, which rejects
+# the 5-field crontab syntax the product docs promise and silently ANDs DOM/DOW.
+croner = "3.0.1"
+# Already in the tree via croner; named here because we call it for `Utc::now()`.
+# `serde` is on for `DateTime<Utc>` in ClawStatus (`lastRunAt`/`nextRunAt`, §3.1).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+# YAML frontmatter of SKILL.md. `yaml` only — the default features pull JSON + TOML
+# engines this never uses.
+gray_matter = { version = "0.3", default-features = false, features = ["yaml"] }
 
 [features]
 default = []
@@ -94,3 +102,4 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.29"
 futures-util = "0.3"
+tempfile = "3.27.0"
