@@ -8,6 +8,8 @@ coding agents such as `claude` or `codex`.
 Built as a study project: each subsystem is implemented from a written spec, then
 verified against the real release binary before the next one starts.
 
+Licensed under the [MIT license](./LICENSE).
+
 ## Status
 
 | Area | State |
