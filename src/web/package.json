@@ -2,6 +2,7 @@
   "name": "spec-ade-web",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Spec ADE frontend — Vue 3 + Quasar SPA (terminal, editor, chat, git).",
   "type": "module",
   "scripts": {
