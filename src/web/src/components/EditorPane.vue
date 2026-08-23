@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// CodeMirror 6 pane (SPEC-002 §5.7).
+// CodeMirror 6 pane (SPEC-002 §5.7, re-scoped for panes in SPEC-008 §5.8).
 //
 // Hard constraints, all of them from the docs rather than taste:
 //
@@ -13,8 +13,16 @@
 // - Settings changes go through `Compartment.reconfigure`, never a rebuild
 //   (`07:41`).
 // - State is only ever changed by dispatching transactions (`04:39`).
+//
+// SPEC-008 shift: this pane is now SELF-RECONCILING and SCOPED. It owns one
+// leaf's file tabs via `useEditorStore(scope=leafId)` and derives which files
+// to show from the LAYOUT tree — the parent no longer calls `seed`/`reveal`.
+// When its leaf's active file tab has no CM document yet, the pane reads it
+// itself; a file that no longer exists is dropped and reported for App's
+// aggregated restore notice (§5.9). Line reveals arrive through the scoped
+// store's `reveal` slot, parked until the document mounts (D39).
 
-import { markRaw, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue';
+import { computed, markRaw, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue';
 import { EditorState, Compartment, type Extension } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { indentUnit } from '@codemirror/language';
@@ -22,14 +30,47 @@ import { basicSetup } from 'codemirror';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 import { languageFor } from '../editor/languages';
+import { findLeaf, type PaneLeaf } from '../panes/tree';
 import { useEditorStore } from '../stores/editor';
+import { useLayoutStore } from '../stores/layout';
 import { useSettingsStore } from '../stores/settings';
 
-const props = defineProps<{ projectId: string }>();
+const props = defineProps<{
+  projectId: string;
+  /** Leaf id this pane belongs to; keys its scoped tab set. Defaults global. */
+  scope?: string;
+}>();
 
-const store = useEditorStore();
+const store = useEditorStore(props.scope ?? 'default');
+const layout = useLayoutStore();
 const settings = useSettingsStore();
 const host = useTemplateRef<HTMLDivElement>('host');
+
+/** This pane's leaf in the current tree, or null if it vanished. */
+const leaf = computed<PaneLeaf | null>(() => {
+  if (!props.scope) return null;
+  const t = layout.tree;
+  return t ? findLeaf(t, props.scope) : null;
+});
+
+/** Project-relative paths of the leaf's file tabs, in strip order. */
+const fileTabPaths = computed<string[]>(() => {
+  const l = leaf.value;
+  if (!l) return [];
+  return l.tabs
+    .filter((t) => t.kind === 'file' && typeof t.params.path === 'string')
+    .map((t) => t.params.path as string);
+});
+
+/** The leaf's active tab path IF it is a file tab; else null. */
+const activeFilePath = computed<string | null>(() => {
+  const l = leaf.value;
+  if (!l) return null;
+  const tab = l.tabs.find((t) => t.id === l.activeTabId);
+  return tab && tab.kind === 'file' && typeof tab.params.path === 'string'
+    ? (tab.params.path as string)
+    : null;
+});
 
 // `shallowRef`: the ref cell is reactive, the CM6 object inside it is not.
 const view = shallowRef<EditorView | null>(null);
@@ -129,11 +170,12 @@ function mount(path: string, state: EditorState): void {
 }
 
 /**
- * A line to jump to once its document is mounted, from a search result (D39).
+ * A line to jump to once its document is mounted (D39).
  *
  * Held rather than applied immediately because the click that asks for it may
- * arrive before the tab's content has been read — `open` is a round trip, and
- * `syncToActive` runs on a watcher, not synchronously.
+ * arrive before the tab's content has been read — loading is a round trip, and
+ * reconciliation runs on a watcher, not synchronously. The scoped store's
+ * `reveal` slot feeds this; `mount` flushes it.
  */
 let pendingReveal: { path: string; line: number } | null = null;
 
@@ -160,10 +202,10 @@ function reveal(path: string, line: number): void {
 }
 
 /**
- * Seed a freshly opened tab with content read from the server.
+ * Seed a freshly read tab with content.
  *
- * Called by the parent with the `ReadResult` — the content goes straight into a
- * CM6 state and never passes through the store.
+ * The content goes straight into a CM6 state and never passes through the
+ * store. If it is the active tab, mount it now.
  */
 function seed(path: string, content: string): void {
   const state = EditorState.create({ doc: content, extensions: baseExtensions(path) });
@@ -171,7 +213,46 @@ function seed(path: string, content: string): void {
   if (store.activePath === path) mount(path, state);
 }
 
-/** Show whichever tab is active, if we have a document for it. */
+/**
+ * Make the scoped editor store hold the file at `path`, reading it if this is
+ * the first time. A read failure (file deleted since the layout was saved)
+ * drops the tab from the leaf and records it for the aggregated notice (§5.9).
+ */
+async function ensureLoaded(path: string): Promise<void> {
+  if (!props.projectId) return;
+  // Already in the scoped store → text is seeded, or it's a binary/tooLarge
+  // tab whose message the template already renders. Nothing to read.
+  if (store.tabFor(path)) return;
+
+  const result = await store.open(props.projectId, path);
+  if (result) {
+    if (result.kind === 'text') seed(result.path, result.content);
+    return;
+  }
+  // open() returned null WITHOUT the tab existing → the read failed. Drop the
+  // dead tab from this leaf and report it.
+  const l = leaf.value;
+  const dead = l?.tabs.find((t) => t.kind === 'file' && t.params.path === path);
+  if (l && dead) {
+    layout.noteMissingFile(path);
+    layout.closeTab(l.id, dead.id);
+  }
+}
+
+/** Show whichever file tab the leaf marks active, loading it on demand. */
+async function reconcileActive(): Promise<void> {
+  const path = activeFilePath.value;
+  if (!path) return;
+  await ensureLoaded(path);
+  // open() already set the store's activePath on a fresh read; for an
+  // already-loaded tab, align the store so `mount` picks it up.
+  if (store.activePath !== path && store.tabFor(path)) {
+    await store.activate(props.projectId, path);
+  }
+  syncToActive();
+}
+
+/** Mount the store's active tab if we hold a document for it. */
 function syncToActive(): void {
   const path = store.activePath;
   if (!path || path === mountedPath) return;
@@ -197,7 +278,7 @@ onMounted(() => {
     return states.get(path)?.doc.toString() ?? null;
   });
 
-  syncToActive();
+  void reconcileActive();
 });
 
 onBeforeUnmount(() => {
@@ -208,20 +289,52 @@ onBeforeUnmount(() => {
   mountedPath = null;
 });
 
-watch(() => store.activePath, syncToActive);
+// Leaf's active file tab changed (strip click, drop, open) → load + mount it.
+watch(activeFilePath, () => void reconcileActive());
 
-// Drop parked documents for tabs that were closed, so the map can't outgrow the
-// tab strip.
+// A parked reveal from the scoped store (search hit, agent link, F-tree open).
 watch(
-  () => store.tabs.map((t) => t.path).join('\n'),
-  () => {
-    const open = new Set(store.tabs.map((t) => t.path));
-    for (const path of [...states.keys()]) {
-      if (!open.has(path)) states.delete(path);
-    }
-    if (mountedPath && !open.has(mountedPath)) mountedPath = null;
+  () => store.reveal,
+  (r) => {
+    if (!r) return;
+    reveal(r.path, r.line);
+    store.clearReveal();
   },
+  { deep: true },
 );
+
+// A parked "reload from disk" (conflict → "Nạp lại từ đĩa", §5.9). Only this
+// pane holds the file's CM6 document, so it does the re-read and re-seed; App
+// just parks the request on the owning leaf's scoped store.
+watch(
+  () => store.reloadRequest,
+  async (r) => {
+    if (!r) return;
+    const path = r.path;
+    store.clearReload();
+    // Drop the stale tab so `open` re-reads from disk instead of just focusing.
+    store.forget(path);
+    states.delete(path);
+    if (mountedPath === path) mountedPath = null;
+    const result = await store.open(props.projectId, path);
+    if (result && result.kind === 'text') seed(result.path, result.content);
+  },
+  { deep: true },
+);
+
+// Drop parked documents for file tabs that left this leaf, so the map can't
+// outgrow the strip. Driven by the LEAF's file tabs, not the store's, so a
+// tab moved to another pane is released here.
+watch(fileTabPaths, (paths) => {
+  const open = new Set(paths);
+  for (const path of [...states.keys()]) {
+    if (!open.has(path)) states.delete(path);
+  }
+  for (const tab of [...store.tabs]) {
+    if (!open.has(tab.path)) store.forget(tab.path);
+  }
+  if (mountedPath && !open.has(mountedPath)) mountedPath = null;
+});
 
 watch(
   () => [
@@ -233,7 +346,7 @@ watch(
   applyConfig,
 );
 
-defineExpose({ seed, reveal, focus: () => view.value?.focus() });
+defineExpose({ focus: () => view.value?.focus() });
 </script>
 
 <template>

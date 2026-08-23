@@ -1,50 +1,87 @@
 <script setup lang="ts">
-// Root component. Pha 2 scope: a sidebar (projects + lazy file tree) beside a
-// main area that shows either the editor or the terminal. The real UI is a
-// recursive pane/tab system with 9 tab kinds — Pha 8
-// (docs/analysis/07-build-roadmap.md).
+// Root component (SPEC-008). The main area is a recursive pane/tab tree
+// (`PaneContainer`) beside a project sidebar. App owns only the cross-cutting
+// concerns the tree can't: the health check, project switching, the
+// conflict/notice footer aggregated across every leaf-scoped editor store, and
+// the global keyboard map (§3.5). Every surface (editor, terminal, agent, git,
+// search, monitor, claws) is now a tab kind rendered by `PaneContent`, so there
+// is no single `view` switch any more.
 
-import { computed, onMounted, ref, useTemplateRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
-import AcpPane from './components/AcpPane.vue';
-import EditorPane from './components/EditorPane.vue';
-import EditorTabs from './components/EditorTabs.vue';
 import FileTree from './components/FileTree.vue';
-import GitPanel from './components/git/GitPanel.vue';
-import MonitorPanel from './components/monitor/MonitorPanel.vue';
-import SearchPanel from './components/search/SearchPanel.vue';
-import TerminalPane from './components/TerminalPane.vue';
-import ClawsPanel from './components/claws/ClawsPanel.vue';
+import PaneContainer from './components/panes/PaneContainer.vue';
 import { apiFetch, resolveToken } from './api/client';
+import { useOpenFile } from './panes/openFile';
+import { findLeaf, genId, leavesInOrder } from './panes/tree';
 import { useAcpStore } from './stores/acp';
-import { useEditorStore } from './stores/editor';
+import { useEditorScopes, useEditorStore } from './stores/editor';
+import { useLayoutStore } from './stores/layout';
 import { useProjectsStore } from './stores/projects';
 import { useSettingsStore } from './stores/settings';
 import { useTerminalsStore } from './stores/terminals';
 
 const terminals = useTerminalsStore();
 const projects = useProjectsStore();
-const editor = useEditorStore();
 const settings = useSettingsStore();
 const acp = useAcpStore();
-
-const pane = useTemplateRef<InstanceType<typeof TerminalPane>>('pane');
-const editorPane = useTemplateRef<InstanceType<typeof EditorPane>>('editorPane');
-const tree = useTemplateRef<InstanceType<typeof FileTree>>('tree');
+const layout = useLayoutStore();
+const openFile = useOpenFile();
+const editorScopes = useEditorScopes();
 
 const health = ref<'checking' | 'ok' | 'error'>('checking');
 const serverVersion = ref('');
-const notice = ref('');
-/** Which surface the main area shows. Pha 8 replaces this with real panes. */
-const view = ref<'editor' | 'terminal' | 'agent' | 'git' | 'search' | 'monitor' | 'claws'>('editor');
+/** Gate the project watcher until the layout document has loaded (§5.2). */
+const ready = ref(false);
 
-const activeTerminal = computed(
-  () => terminals.terminals.find((t) => t.id === terminals.activeId) ?? null,
-);
 const projectId = computed(() => projects.activeId);
 
+/** The path of the focused leaf's active file tab, for FileTree highlighting. */
+const focusedFilePath = computed<string | null>(() => {
+  const t = layout.tree;
+  const id = layout.activeLeafId;
+  if (!t || !id) return null;
+  const leaf = findLeaf(t, id);
+  const tab = leaf?.tabs.find((x) => x.id === leaf.activeTabId);
+  return tab && tab.kind === 'file' && typeof tab.params.path === 'string'
+    ? (tab.params.path as string)
+    : null;
+});
+
+// ---- conflict / error aggregation across every leaf-scoped editor store ----
+
+/** First unresolved save conflict in any leaf, with the scope that owns it. */
+const conflictInfo = computed(() => {
+  for (const scope of editorScopes.value) {
+    const store = useEditorStore(scope);
+    if (store.conflict) return { scope, conflict: store.conflict };
+  }
+  return null;
+});
+
+/** First error message from any editor scope (§5.9). */
+const editorError = computed<string | null>(() => {
+  for (const scope of editorScopes.value) {
+    const store = useEditorStore(scope);
+    if (store.error) return store.error;
+  }
+  return null;
+});
+
+const footerMessage = computed<string | null>(
+  () =>
+    layout.notice ||
+    editorError.value ||
+    projects.error ||
+    terminals.error ||
+    settings.error ||
+    acp.error ||
+    layout.error ||
+    layout.restoreNotice,
+);
+// ---- lifecycle -------------------------------------------------------------
+
 onMounted(async () => {
-  // Capture `?token=` before anything else needs it.
   resolveToken();
 
   try {
@@ -53,95 +90,145 @@ onMounted(async () => {
     serverVersion.value = body.version;
   } catch (err) {
     health.value = 'error';
-    notice.value = err instanceof Error ? err.message : String(err);
+    layout.setNotice(err instanceof Error ? err.message : String(err));
     return;
   }
 
-  await Promise.all([settings.load(), projects.refresh()]);
-
-  // Adopt shells that survived a reload before creating anything new.
+  // Layout must be loaded before any project is shown (setProject reads the
+  // persisted per-project tree / lastLayout template).
+  await Promise.all([settings.load(), projects.refresh(), layout.load()]);
+  // Adopt shells that survived a reload; their tabs (if any) reattach on render.
   await terminals.refresh();
-  if (terminals.terminals.length === 0) {
-    await terminals.create(projects.active ? { cwd: projects.active.path } : {});
-  }
+
+  ready.value = true;
+  if (projects.activeId) selectProject(projects.activeId);
+
+  window.addEventListener('keydown', onKeydown);
 });
 
-// Tabs hold project-relative paths, so they are meaningless against another
-// root: switching project starts from a clean slate.
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
+
+// Project switch: show its tree; a genuinely fresh project gets one session tab.
 watch(
   () => projects.activeId,
-  (id, previous) => {
-    if (previous !== undefined && id !== previous) editor.reset();
+  (id) => {
+    if (!ready.value) return;
+    if (id) selectProject(id);
+    else layout.clearCurrent();
   },
 );
 
-async function openFile(path: string): Promise<void> {
-  if (!projectId.value) return;
-  const result = await editor.open(projectId.value, path);
-  view.value = 'editor';
-  // Only a fresh read carries content; an already-open tab returns null and the
-  // pane still has its document.
-  if (result?.kind === 'text') {
-    editorPane.value?.seed(result.path, result.content);
+function selectProject(id: string): void {
+  layout.setProject(id);
+  const t = layout.tree;
+  // Fresh project (empty leaves, no persisted tabs) → seed the agent tab (§5.9).
+  if (t && leavesInOrder(t).every((l) => l.tabs.length === 0)) {
+    layout.openSingleton('session');
   }
 }
-
-/** Open a search hit at its line (D39). */
-async function openMatch(path: string, line: number): Promise<void> {
-  await openFile(path);
-  // After the await the tab exists but its state may not be mounted yet; the
-  // pane holds the request until it is.
-  editorPane.value?.reveal(path, line);
-}
+// ---- sidebar actions -------------------------------------------------------
 
 async function addProject(): Promise<void> {
-  // No native directory picker in a browser tab: the server needs a real path,
-  // and `<input type=file webkitdirectory>` never yields one. Pha 9 (Tauri) gets
-  // the OS dialog; until then this is the honest input.
+  // No native directory picker in a browser tab: the server needs a real path.
   const path = window.prompt('Đường dẫn thư mục project:');
   if (!path?.trim()) return;
-  const project = await projects.add({ path: path.trim() });
-  if (project) editor.reset();
+  await projects.add({ path: path.trim() });
 }
 
 async function removeProject(id: string): Promise<void> {
   const project = projects.projects.find((p) => p.id === id);
   if (!window.confirm(`Bỏ project "${project?.name ?? id}" khỏi danh sách?`)) return;
   await projects.remove(id);
+  // Drop its tree from the mirror so the next PUT doesn't resurrect it (F24).
+  layout.dropProject(id);
 }
 
 async function newTerminal(): Promise<void> {
-  // Open the new shell in the active project, falling back to the current one's
-  // cwd — which is what a "new tab" does in every terminal app.
-  const cwd = projects.active?.path ?? activeTerminal.value?.cwd;
-  await terminals.create(cwd ? { cwd } : {});
-  view.value = 'terminal';
+  // Open the new shell in the active project's cwd, then give it a tab in the
+  // focused leaf — "new terminal tab", the same as every terminal app.
+  const cwd = projects.active?.path;
+  const info = await terminals.create(cwd ? { cwd } : {});
+  if (info) {
+    layout.openTab({
+      id: genId('tab'),
+      kind: 'terminal',
+      title: 'sh',
+      params: { terminalId: info.id },
+    });
+  }
 }
-
-function selectTerminal(id: string): void {
-  terminals.select(id);
-  view.value = 'terminal';
-  // Wait for the pane to swap before focusing it.
-  requestAnimationFrame(() => pane.value?.focus());
-}
+// ---- conflict / notice footer ----------------------------------------------
 
 async function overwrite(): Promise<void> {
-  const pending = editor.conflict;
-  if (!pending || !projectId.value) return;
-  await editor.overwrite(projectId.value, pending.path);
+  const info = conflictInfo.value;
+  if (!info || !projectId.value) return;
+  await useEditorStore(info.scope).overwrite(projectId.value, info.conflict.path);
 }
 
-/** Reload the file the conflict is about, discarding the local edit. */
-async function reloadConflicted(): Promise<void> {
-  const pending = editor.conflict;
-  if (!pending || !projectId.value) return;
-  const path = pending.path;
-  editor.dismissConflict();
-  editor.forget(path);
-  await openFile(path);
+/** Discard the local edit and re-read from disk, in the leaf that owns it. */
+function reloadConflicted(): void {
+  const info = conflictInfo.value;
+  if (!info) return;
+  const store = useEditorStore(info.scope);
+  store.dismissConflict();
+  store.requestReload(info.conflict.path);
+}
+
+function dismissConflict(): void {
+  const info = conflictInfo.value;
+  if (info) useEditorStore(info.scope).dismissConflict();
+}
+
+function dismissNotice(): void {
+  layout.clearNotice();
+  layout.clearMissingFiles();
+}
+
+// ---- global keyboard map (§3.5) --------------------------------------------
+
+function onKeydown(ev: KeyboardEvent): void {
+  if (!(ev.metaKey || ev.ctrlKey)) return;
+  switch (ev.code) {
+    case 'Backslash': // ⌘\ split right, ⌘⇧\ split down
+      ev.preventDefault();
+      layout.splitActive(ev.shiftKey ? 'vertical' : 'horizontal');
+      break;
+    case 'BracketRight': // ⌘] focus next leaf
+      ev.preventDefault();
+      layout.cycleFocus(1);
+      break;
+    case 'BracketLeft': // ⌘[ focus previous leaf
+      ev.preventDefault();
+      layout.cycleFocus(-1);
+      break;
+    case 'Enter': // ⌘⇧↵ toggle maximize
+      if (ev.shiftKey) {
+        ev.preventDefault();
+        layout.toggleMaximize();
+      }
+      break;
+    case 'KeyW': // ⌘W close focused pane's active tab
+      ev.preventDefault();
+      void closeFocused();
+      break;
+    default:
+  }
+}
+/** Close the focused leaf's active tab, saving a dirty file first (§5.6). */
+async function closeFocused(): Promise<void> {
+  const t = layout.tree;
+  const id = layout.activeLeafId;
+  if (!t || !id) return;
+  const leaf = findLeaf(t, id);
+  const tabId = leaf?.activeTabId;
+  if (!leaf || !tabId) return;
+  const tab = leaf.tabs.find((x) => x.id === tabId);
+  if (tab?.kind === 'file' && projectId.value && typeof tab.params.path === 'string') {
+    await useEditorStore(id).saveIfDirty(projectId.value, tab.params.path);
+  }
+  layout.closeTab(id, tabId);
 }
 </script>
-
 <template>
   <div class="app">
     <header class="app__bar">
@@ -152,77 +239,18 @@ async function reloadConflicted(): Promise<void> {
 
       <span class="app__spacer" />
 
-      <div class="app__switch" role="tablist" aria-label="Khung làm việc">
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'editor' }"
-          role="tab"
-          :aria-selected="view === 'editor'"
-          @click="view = 'editor'"
-        >
-          Editor
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'terminal' }"
-          role="tab"
-          :aria-selected="view === 'terminal'"
-          @click="view = 'terminal'"
-        >
-          Terminal
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'agent' }"
-          role="tab"
-          :aria-selected="view === 'agent'"
-          @click="view = 'agent'"
-        >
-          Agent
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'git' }"
-          role="tab"
-          :aria-selected="view === 'git'"
-          @click="view = 'git'"
-        >
-          Git
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'search' }"
-          role="tab"
-          :aria-selected="view === 'search'"
-          @click="view = 'search'"
-        >
-          Tìm
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'monitor' }"
-          role="tab"
-          :aria-selected="view === 'monitor'"
-          @click="view = 'monitor'"
-        >
-          Máy
-        </button>
-        <button
-          class="app__btn"
-          :class="{ 'app__btn--on': view === 'claws' }"
-          role="tab"
-          :aria-selected="view === 'claws'"
-          @click="view = 'claws'"
-        >
-          Claws
-        </button>
+      <div class="app__switch" role="toolbar" aria-label="Mở panel">
+        <button class="app__btn" :disabled="!projectId" @click="layout.openSingleton('session')">Agent</button>
+        <button class="app__btn" :disabled="!projectId" @click="layout.openSingleton('git')">Git</button>
+        <button class="app__btn" :disabled="!projectId" @click="layout.openSingleton('search')">Tìm</button>
+        <button class="app__btn" :disabled="!projectId" @click="layout.openSingleton('monitor')">Máy</button>
+        <button class="app__btn" :disabled="!projectId" @click="layout.openSingleton('claws')">Claws</button>
       </div>
 
-      <button class="app__btn" :disabled="health !== 'ok'" @click="newTerminal">
+      <button class="app__btn" :disabled="health !== 'ok' || !projectId" @click="newTerminal">
         + Terminal
       </button>
     </header>
-
     <div class="app__main">
       <aside class="app__side">
         <div class="app__side-head">
@@ -249,100 +277,35 @@ async function reloadConflicted(): Promise<void> {
         </div>
 
         <FileTree
-          ref="tree"
           :project-id="projectId"
-          :selected-path="editor.activePath"
-          @open="openFile"
-          @error="(message) => (notice = message)"
+          :selected-path="focusedFilePath"
+          @open="(path) => openFile(projectId, path)"
+          @error="(message) => layout.setNotice(message)"
         />
       </aside>
 
       <main class="app__body">
-        <template v-if="view === 'editor'">
-          <p v-if="!projectId" class="app__empty">
-            {{ health === 'ok' ? 'Thêm một project để bắt đầu.' : 'Đang chờ backend…' }}
-          </p>
-          <template v-else>
-            <EditorTabs :project-id="projectId" />
-            <EditorPane ref="editorPane" :project-id="projectId" />
-          </template>
-        </template>
-
-        <template v-else-if="view === 'terminal'">
-          <nav v-if="terminals.terminals.length" class="app__tabs">
-            <button
-              v-for="t in terminals.terminals"
-              :key="t.id"
-              class="app__tab"
-              :class="{
-                'app__tab--active': t.id === terminals.activeId,
-                'app__tab--dead': !t.alive,
-              }"
-              @click="selectTerminal(t.id)"
-            >
-              <span>{{ t.alive ? 'sh' : `sh (exited${t.exitCode === null ? '' : ` ${t.exitCode}`})` }}</span>
-              <span class="app__tab-close" role="button" @click.stop="terminals.destroy(t.id)">×</span>
-            </button>
-          </nav>
-          <TerminalPane
-            v-if="activeTerminal"
-            ref="pane"
-            :key="activeTerminal.id"
-            :terminal-id="activeTerminal.id"
-            @cwd="(path) => terminals.updateCwd(activeTerminal!.id, path)"
-            @exit="(code) => terminals.markExited(activeTerminal!.id, code)"
-            @error="(message) => (notice = message)"
-          />
-          <p v-else class="app__empty">
-            {{ health === 'ok' ? 'No terminal open.' : 'Đang chờ backend…' }}
-          </p>
-        </template>
-
-        <template v-else-if="view === 'git'">
-          <GitPanel v-if="projectId" :project-id="projectId" />
-          <p v-else class="app__empty">Thêm một project để xem Git.</p>
-        </template>
-
-        <template v-else-if="view === 'search'">
-          <SearchPanel :project-id="projectId" @open="openMatch" />
-        </template>
-
-        <!-- Unmounted when hidden: the server keeps sampling while a subscriber
-             is attached, and a hidden panel is not a reader (SPEC-006 §5.4). -->
-        <template v-else-if="view === 'monitor'">
-          <MonitorPanel />
-        </template>
-
-        <!-- Claws hold no sockets of their own (status is polled per action),
-             so mounting only while shown costs nothing and keeps drafts local. -->
-        <template v-else-if="view === 'claws'">
-          <ClawsPanel />
-        </template>
-
-        <!-- Kept mounted only while shown: its sockets hold the connection's
-             watcher guard, and an unwatched connection is what the idle reaper
-             is allowed to collect (SPEC-003 [INVENTED-10]). -->
-        <AcpPane v-else :project-id="projectId" />
+        <PaneContainer v-if="layout.tree" :node="layout.tree" />
+        <p v-else class="app__empty">
+          {{ health === 'ok' ? 'Thêm một project để bắt đầu.' : 'Đang chờ backend…' }}
+        </p>
       </main>
     </div>
-
     <!-- A refused save is the one error the user must answer, so it gets buttons
-         rather than a message that scrolls away (SPEC-002 §3.4). -->
-    <footer v-if="editor.conflict" class="app__conflict">
-      <span>{{ editor.conflict.path }} đã bị sửa bên ngoài.</span>
+         rather than a message that scrolls away (SPEC-002 §3.4). The conflict may
+         belong to any leaf — `conflictInfo` carries the scope that owns it. -->
+    <footer v-if="conflictInfo" class="app__conflict">
+      <span>{{ conflictInfo.conflict.path }} đã bị sửa bên ngoài.</span>
       <button class="app__btn" @click="overwrite">Ghi đè</button>
       <button class="app__btn" @click="reloadConflicted">Nạp lại từ đĩa</button>
-      <button class="app__btn" @click="editor.dismissConflict()">Để sau</button>
+      <button class="app__btn" @click="dismissConflict">Để sau</button>
     </footer>
-    <footer
-      v-else-if="notice || editor.error || projects.error || terminals.error || settings.error || acp.error"
-      class="app__notice"
-    >
-      {{ notice || editor.error || projects.error || terminals.error || settings.error || acp.error }}
+    <footer v-else-if="footerMessage" class="app__notice">
+      <span>{{ footerMessage }}</span>
+      <button class="app__notice-x" title="Bỏ qua" @click="dismissNotice">×</button>
     </footer>
   </div>
 </template>
-
 <style scoped>
 .app {
   display: flex;
@@ -388,10 +351,6 @@ async function reloadConflicted(): Promise<void> {
   font: inherit;
   font-size: 12px;
 }
-.app__btn--on {
-  border-color: #4c7ecf;
-  background: #26354d;
-}
 .app__btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -434,41 +393,6 @@ async function reloadConflicted(): Promise<void> {
   cursor: pointer;
   font: inherit;
 }
-.app__tabs {
-  display: flex;
-  gap: 2px;
-  padding: 4px 8px 0;
-  overflow-x: auto;
-}
-.app__tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border: 1px solid #2c2c2c;
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  background: #1c1c1c;
-  color: #b8b8b8;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.app__tab--active {
-  background: #1e1e1e;
-  color: #fff;
-}
-.app__tab--dead {
-  color: #7a7a7a;
-  font-style: italic;
-}
-.app__tab-close {
-  opacity: 0.6;
-}
-.app__tab-close:hover {
-  opacity: 1;
-}
 .app__body {
   display: flex;
   flex: 1;
@@ -481,11 +405,27 @@ async function reloadConflicted(): Promise<void> {
   color: #9e9e9e;
 }
 .app__notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 12px;
   border-top: 1px solid #4a2020;
   background: #2a1717;
   color: #ff9b9b;
   font-size: 12px;
+}
+.app__notice span {
+  flex: 1;
+}
+.app__notice-x {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
 }
 .app__conflict {
   display: flex;

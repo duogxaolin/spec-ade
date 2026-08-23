@@ -305,6 +305,10 @@ async fn delete_project(
                 // the same write as the project so a crash between the two steps
                 // cannot leave a claw pointing at nothing.
                 settings.claws.retain(|c| c.project_id != id);
+                // Cascade the saved pane tree (SPEC-008 §3.3): an orphaned layout
+                // would resurrect tabs for a project that no longer exists. Same
+                // write as the project removal for the same crash-safety reason.
+                settings.project_layouts.remove(&id);
                 Ok(settings.projects.len() < before)
             })
         }
@@ -316,7 +320,7 @@ async fn delete_project(
         // Cascade ACP (SPEC-003): the project's agents hold its path as their
         // session `cwd` and `fs/*` sandbox root. Left running they would keep
         // working against a directory the user just deregistered.
-        // TODO(spec-008): cascade layout (06:23 also requires it; no layout yet).
+        // The saved pane tree is cascaded inside the settings write above.
         // Cascade the claw runtime first (SPEC-007 §5.6): its loop tasks hold
         // ACP connections of their own, and aborting them before `kill_project`
         // means no trigger can fire mid-teardown.
