@@ -118,6 +118,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ws/echo", any(ws::echo_ws))
         .merge(routes::terminals::router())
         .merge(routes::settings::router())
+        .merge(routes::layout::router())
         .merge(routes::projects::router())
         .merge(routes::acp::router())
         .merge(routes::sessions::router())

@@ -93,6 +93,23 @@ pub struct Settings {
     /// claws API; the runtime status lives in RAM ([INVENTED-10]).
     #[serde(default)]
     pub claws: Vec<crate::claws::ClawDefinition>,
+
+    /// Per-project pane trees (SPEC-008 §3.3), keyed by project id. Stored as
+    /// OPAQUE JSON: the server persists and returns the tree verbatim and never
+    /// parses its shape — the pane grammar lives entirely in the frontend, so
+    /// the layout schema can evolve without a server release ([INVENTED-8-server]).
+    #[serde(default)]
+    pub project_layouts: std::collections::HashMap<String, serde_json::Value>,
+
+    /// The most recently active pane tree (SPEC-008 §3.3), used to restore a
+    /// sensible default when a project has no saved layout yet. Also opaque.
+    #[serde(default)]
+    pub last_layout: Option<serde_json::Value>,
+
+    /// User-saved layout presets (SPEC-008 §3.4). Opaque list of `{name, tree}`
+    /// objects; the server neither validates nor de-duplicates them.
+    #[serde(default)]
+    pub layout_presets: Vec<serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -107,6 +124,9 @@ impl Default for Settings {
             projects: Vec::new(),
             acp_agents: crate::acp::agent::default_agents(),
             claws: Vec::new(),
+            project_layouts: std::collections::HashMap::new(),
+            last_layout: None,
+            layout_presets: Vec::new(),
         }
     }
 }

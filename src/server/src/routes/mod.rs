@@ -14,6 +14,9 @@ pub mod error;
 // settings — GET/PUT /api/settings (partial update Option<Option<T>>).
 // Implemented: SPEC-002.
 pub mod settings;
+// layout — GET/PUT /api/layout (opaque per-project pane trees + presets).
+// Implemented: SPEC-008.
+pub mod layout;
 // projects — CRUD + GET /api/projects/{id}/tree (ignore-crate walk).
 // Implemented: SPEC-002.
 pub mod projects;
